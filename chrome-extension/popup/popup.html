@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Terms Analyzer</title>
+    <link rel="stylesheet" href="popup.css"> <!-- Link to the popup's CSS for styling -->
+    <!-- <script src="scripts/sweetalert2.min.js"></script> Link to the local SweetAlert2 library -->
+</head>
+<body>
+    <div class="container">
+        <h1>Terms Analyzer</h1> <!-- Extension title -->
+        
+        <!-- Loading Section: Displays a message and a spinner while analysis is in progress -->
+        <div id="loading" class="hidden">
+            <p>Analyzing policies...</p>
+            <div class="spinner"></div>
+        </div>
+        
+        <!-- No Policy Section: Informs the user that no policy was detected and provides a button to scan the page -->
+        <div id="no-policy" class="hidden">
+            <p>No policy detected on this page.</p>
+            <button id="scan-page">Scan Page</button>
+        </div>
+        
+        <!-- Policy Links Section: Lists found policy links with checkboxes and a button to analyze selected links -->
+        <div id="policy-links" class="hidden">
+            <p>Found policy links:</p>
+            <ul id="links-list"></ul> <!-- Dynamically populated list of policy links -->
+            <button id="analyze-selected">Analyze Selected</button>
+        </div>
+        
+        <!-- Analysis Results Section: Displays the summary, key points, and concerns from the policy analysis -->
+        <div id="analysis-results" class="hidden">
+            <h2>Analysis Results</h2>
+            <div id="summary"></div> <!-- Summary of the policy analysis -->
+            
+            <h3>Key Points</h3>
+            <ul id="key-points"></ul> <!-- List of key points extracted from the policy -->
+            
+            <h3>Concerns</h3>
+            <ul id="concerns"></ul> <!-- List of concerns identified in the policy -->
+        </div>
+        
+        <script src="popup.js"></script> <!-- Link to the popup's JavaScript for interactivity -->
+    </div>
+</body>
+</html>

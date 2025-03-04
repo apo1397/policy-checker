@@ -1,0 +1,16 @@
+/* styles/content.css */
+
+/* Styles for the Policy Analysis Widget */
+.policy-analysis-widget {
+    font-family: Arial, sans-serif;
+    color: #333;
+}
+
+.policy-analysis-widget h3 {
+    margin-top: 0;
+}
+
+.policy-analysis-widget ul {
+    list-style-type: disc;
+    padding-left: 20px;
+}

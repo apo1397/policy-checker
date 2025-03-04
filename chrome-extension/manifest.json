@@ -1,0 +1,45 @@
+{
+    "manifest_version": 3,
+    "name": "Policy Analyzer",
+    "version": "1.0.0",
+    "description": "Analyzes website policies and terms.",
+    "icons": {
+        "16": "icons/hyp_logo_16.png",
+        "48": "icons/hyp_logo_48.png",
+        "128": "icons/hyp_logo_128.png"
+    },
+    "permissions": [
+        "storage",
+        "tabs",
+        "activeTab",
+        "scripting"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "action": {
+        "default_popup": "popup/popup.html",
+        "default_icon": {
+            "16": "icons/hyp_logo_16.png",
+            "48": "icons/hyp_logo_48.png",
+            "128": "icons/hyp_logo_128.png"
+        }
+    },
+    "content_scripts": [
+        {
+            "matches": ["<all_urls>"],
+            "js": ["content.js"],
+            "css": ["styles/content.css"]
+        }
+    ],
+    "web_accessible_resources": [{
+        "resources": ["icons/*"],
+        "matches": ["<all_urls>"]
+    }],
+    "host_permissions": [
+        "http://127.0.0.1:5000/*"
+    ],
+    "content_security_policy": {
+        "extension_pages": "script-src 'self'; object-src 'self';"
+    }
+}
