@@ -1,4 +1,4 @@
-#!/Users/apoorvabhishek/Documents/privacy_chromextension/backend/venv/bin/python3.11
+#!/Users/apoorvabhishek/Documents/privacy_chromextension/backend/venv/bin/python
 # -*- coding: utf-8 -*-
 import re
 import sys

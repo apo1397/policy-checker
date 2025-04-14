@@ -1,6 +1,6 @@
-Flask==2.3.2
-Flask-CORS==3.0.10
-SQLAlchemy==2.0.32
-requests==2.31.0
-supabase==1.0.3
-python-dotenv==1.0.0
+Flask
+Flask-CORS
+requests
+python-dotenv
+supabase
+google-generativeai
