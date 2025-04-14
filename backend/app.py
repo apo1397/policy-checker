@@ -1,10 +1,12 @@
 import logging
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from models import Session, PolicyAnalysis
+from models import Session, Domain, Policy
 from analysis import perform_analysis
 import json
 from datetime import datetime
+from urllib.parse import urlparse
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,157 +18,145 @@ CORS(app, debug=True)
 
 db_session = Session()
 
-@app.route('/analyze', methods=['POST'])
+@app.route('/get-domain/<string:domain_name>', methods=['GET'])
+def get_domain(domain_name):
+    try:
+        domain_response = Domain.get_by_name(domain_name)
+        if not domain_response.data:
+            return jsonify({'exists': False}), 404
+        
+        domain = domain_response.data[0]
+        return jsonify({
+            'exists': True,
+            'policy_count': domain['policy_count'],
+            'processing_status': domain['processing_status'],
+            'updated_at': domain['updated_at']
+        }), 200
+    except Exception as e:
+        log.exception(f"Error checking domain {domain_name}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/save-policies', methods=['POST'])
+def save_policies():
+    data = request.get_json()
+    log.info(f"Received request to save policies: {data}")
+
+    if not data or 'domain' not in data or 'policies' not in data:
+        return jsonify({'error': 'Invalid request: domain and policies are required'}), 400
+
+    try:
+        # Check if domain exists
+        domain_response = Domain.get_by_name(data['domain'])
+        if not domain_response.data:
+            # Create new domain
+            domain_response = Domain.create(
+                name=data['domain'],
+                base_url=data['base_url'],
+                legal_entity_name=data.get('legal_entity_name', '')
+            )
+        domain = domain_response.data[0]
+
+        # Save each policy
+        for policy_data in data['policies']:
+            existing_policy = Policy.get_by_url(policy_data['url'])
+            if not existing_policy.data:
+                Policy.create(
+                    domain_id=domain['id'],
+                    policy_type=policy_data['policy_type'],
+                    page_name=policy_data['title'],
+                    page_url=policy_data['url'],
+                    processing_status='pending_analysis'  # Updated status
+                )
+
+        # Update domain status
+        Domain.update(domain['id'], {
+            'policy_count': len(data['policies']),
+            'processing_status': 'pending_analysis',  # Added status update
+            'updated_at': datetime.utcnow().isoformat()
+        })
+
+        return jsonify({'message': 'Policies saved successfully'}), 200
+
+    except Exception as e:
+        log.exception(f"Error saving policies: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/get-policies/<int:domain_id>', methods=['GET'])
+def get_policies(domain_id):
+    policies = db_session.query(Policy).filter_by(domain_id=domain_id).all()
+    if not policies:
+        return jsonify([])
+
+    return jsonify([
+        {
+            'id': policy.id,
+            'policy_type': policy.policy_type,
+            'page_name': policy.page_name,
+            'page_url': policy.page_url,
+            'processing_status': policy.processing_status,
+            'last_updated_at': policy.last_updated_at.isoformat(),
+            'checksum': policy.checksum,
+            'llm_details': policy.llm_details,
+            'llm_prompt': policy.llm_prompt,
+            'processing_output': policy.processing_output
+        } for policy in policies
+    ]), 200
+
+@app.route('/analyze-policy', methods=['POST'])
 def analyze_policy():
     data = request.get_json()
     log.info(f"Received request to analyze policy: {data}")
 
-    if not data or 'content' not in data or 'domain' not in data:
-        log.error('Invalid request: Missing "content" or "domain".')
-        return jsonify({'error': 'Invalid request. "content" and "domain" are required.'}), 400
+    if not data or 'url' not in data or 'title' not in data:
+        return jsonify({'error': 'Invalid request: "url" and "title" are required.'}), 400
 
-    content = data['content']
-    domain = data['domain']
-    title = data.get('title')  # New title parameter
+    url = data['url']
+    title = data['title']
+    domain_name = extract_domain(url)
 
-    # Check if the domain already exists in the database
-    existing_analysis = db_session.query(PolicyAnalysis).filter_by(domain=domain).first()
-    if existing_analysis:
-        log.info(f"Returning cached analysis for domain: {domain}")
-        return jsonify({
-            'summary': existing_analysis.summary,
-            'keyPoints': json.loads(existing_analysis.key_points),
-            'concerns': json.loads(existing_analysis.concerns)
-        }), 200
-
-    # Create a new entry in the database
-    new_analysis = PolicyAnalysis(
-        domain=domain,
-        title=title,
-        url=data.get('url'),  # Assume this comes with the request
-        status='not_processed',
-        created_at=datetime.utcnow(),
-        summary=None,
-        key_points=json.dumps([]),
-        concerns=json.dumps([]),
-        llm_model=None
-    )
-    db_session.add(new_analysis)
-    db_session.commit()
-    log.info(f"Saved new policy analysis to database for domain: {domain}")
-
-    # Perform the analysis
-    analysis_result = perform_analysis(content)
-    log.info(f"Analysis result for domain {domain}: {analysis_result}")
-
-    new_analysis.summary = analysis_result['summary']
-    new_analysis.key_points = json.dumps(analysis_result['keyPoints'])
-    new_analysis.concerns = json.dumps(analysis_result['concerns'])
-    new_analysis.status = 'processed'  # Update status to processed
-    new_analysis.updated_at = datetime.utcnow()
-    db_session.commit()
-    log.info(f"Updated existing policy analysis for domain: {domain}")
-
-    return jsonify(analysis_result), 200
-
-@app.route('/cached-analysis/<string:domain>', methods=['GET'])
-def get_cached_analysis(domain):
-    log.info(f"Request for cached analysis for domain: {domain}")
-    analysis = db_session.query(PolicyAnalysis).filter_by(domain=domain).first()
-    if not analysis:
-        log.warning(f"Cached analysis not found for domain: {domain}")
-        return jsonify({'error': 'No cached analysis found for this domain.'}), 404
-
-    log.info(f"Returning cached analysis for domain: {domain}")
-    return jsonify({
-        'domain': analysis.domain,
-        'summary': analysis.summary,
-        'keyPoints': json.loads(analysis.key_points),
-        'concerns': json.loads(analysis.concerns)
-    }), 200
-
-@app.route('/cached-analysis/<string:domain>', methods=['POST'])
-def update_cached_analysis(domain):
-    data = request.get_json()
-    log.info(f"Request to update cached analysis for domain: {domain} with data: {data}")
-
-    if not data or 'summary' not in data or 'keyPoints' not in data or 'concerns' not in data:
-        log.error('Invalid request: Missing required fields.')
-        return jsonify({'error': 'Invalid request. "summary", "keyPoints", and "concerns" are required.'}), 400
-
-    analysis = db_session.query(PolicyAnalysis).filter_by(domain=domain).first()
-    if not analysis:
-        log.warning(f"No existing analysis found for domain: {domain}")
-        return jsonify({'error': 'No existing analysis found for this domain.'}), 404
-
-    analysis.summary = data['summary']
-    analysis.key_points = json.dumps(data['keyPoints'])
-    analysis.concerns = json.dumps(data['concerns'])
-    db_session.commit()
-    log.info(f"Updated cached analysis for domain: {domain}")
-
-    return jsonify({'message': 'Analysis updated successfully.'}), 200
-
-@app.route('/fetch-and-analyze', methods=['POST'])
-def fetch_and_analyze_policies():
-    data = request.get_json()
-    log.info(f"Received request to fetch and analyze policies: {data}")
-
-    if not data or 'urls' not in data:
-        log.error('Invalid request: Missing "urls" field.')
-        return jsonify({'error': 'Invalid request. "urls" are required.'}), 400
-    
-    urls = data['urls']
-    aggregate_summary = ""
-    aggregate_key_points = []
-    aggregate_concerns = []
-
-    for url in urls:
-        domain = extract_domain(url)
-        analysis = db_session.query(PolicyAnalysis).filter_by(domain=domain).first()
-        
-        if not analysis:
-            policy_content = fetch_policy_content(url)
-            if not policy_content:
-                log.warning(f"Failed to fetch content from URL: {url}")
-                continue
-
-            analysis_result = perform_analysis(policy_content)
-            log.info(f"Analysis result for domain {domain}: {analysis_result}")
-
-            # Create a new entry for fetched policy
-            new_analysis = PolicyAnalysis(
-                domain=domain,
-                url=url,
-                title='Policy Title Here',  # Update with actual title from policy content parsing
-                status='processed',
-                created_at=datetime.utcnow(),
-                summary=analysis_result['summary'],
-                key_points=json.dumps(analysis_result['keyPoints']),
-                concerns=json.dumps(analysis_result['concerns']),
-                llm_model='Model details here'  # Include model details if applicable
+    try:
+        # Check if domain exists
+        domain_response = Domain.get_by_name(domain_name)
+        if not domain_response.data:
+            # Create new domain
+            domain_response = Domain.create(
+                name=domain_name,
+                base_url=url
             )
-            db_session.add(new_analysis)
-            db_session.commit()
-            log.info(f"Saved new analysis to database for domain: {domain}")
+        
+        domain = domain_response.data[0]
 
-            analysis = new_analysis
+        # Create new policy
+        policy_response = Policy.create(
+            domain_id=domain['id'],
+            policy_type='privacy_policy',
+            page_name=title,
+            page_url=url
+        )
+        policy = policy_response.data[0]
 
-        aggregate_summary += f"\n{analysis.summary}"
-        aggregate_key_points.extend(json.loads(analysis.key_points))
-        aggregate_concerns.extend(json.loads(analysis.concerns))
+        # Perform analysis
+        analysis_result = perform_analysis(fetch_policy_content(url))
+        
+        # Update policy with results
+        Policy.update(policy['id'], {
+            'processing_status': 'processed',
+            'last_updated_at': datetime.utcnow().isoformat(),
+            'llm_details': 'GPT-3.5',
+            'llm_prompt': 'Prompt used for LLM processing',
+            'processing_output': json.dumps(analysis_result)
+        })
 
-    log.info(f"Aggregated analysis result: {aggregate_summary}, {aggregate_key_points}, {aggregate_concerns}")
-    return jsonify({
-        "aggregateSummary": aggregate_summary.strip(),
-        "aggregateKeyPoints": aggregate_key_points,
-        "aggregateConcerns": aggregate_concerns
-    }), 200
+        return jsonify({'message': 'Policy analyzed and saved successfully.'}), 200
+
+    except Exception as e:
+        log.exception(f"Error analyzing policy {url}: {e}")
+        return jsonify({'error': f'Error analyzing policy: {str(e)}'}), 500
 
 def extract_domain(url):
-    from urllib.parse import urlparse
     parsed_url = urlparse(url)
-    return parsed_url.hostname
+    return parsed_url.netloc
+
 
 def fetch_policy_content(url):
     import requests
