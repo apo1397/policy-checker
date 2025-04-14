@@ -1,18 +1,20 @@
-# Environment files
-.env
-.env.*
-!.env.example
+# Virtual Environment
+venv/
+env/
+.venv/
+.env/
+backend/venv/
+/Users/apoorvabhishek/Documents/privacy_chromextension/backend/venv/
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-env/
-venv/
-.env/
-.venv/
+
+# Environment variables
+.env
+.env.*
+!.env.example
 
 # IDE
 .idea/
