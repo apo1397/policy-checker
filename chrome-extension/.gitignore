@@ -23,3 +23,6 @@ yarn-error.log*
 
 # API Keys
 secrets.js
+
+# Python cache
+backend/__pycache__/

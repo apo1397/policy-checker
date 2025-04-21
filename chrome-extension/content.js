@@ -26,22 +26,66 @@ const policyTypeMap = {
 };
 
 // Combined function to check for policy pages and links
+// Create a more efficient policy matcher
+const createPolicyMatcher = () => {
+    const patterns = Object.entries(policyTypeMap).map(([key, value]) => ({
+        regex: new RegExp(key, 'i'),
+        type: value
+    }));
+
+    return (text) => {
+        const match = patterns.find(pattern => pattern.regex.test(text));
+        return match ? match.type : null;
+    };
+};
+
+const policyMatcher = createPolicyMatcher();
+
+// Use in detectPolicies
+// Enhanced logging utility with Chrome extension compatible debug mode
+const log = {
+    info: (message, data = null) => {
+        const logMessage = data ? `${message} | Data: ${JSON.stringify(data)}` : message;
+        console.log(`[Policy Analyzer][INFO][${new Date().toISOString()}] ${logMessage}`);
+    },
+    error: (message, error = null) => {
+        const errorDetails = error ? ` | Error: ${error.message || JSON.stringify(error)}` : '';
+        console.error(`[Policy Analyzer][ERROR][${new Date().toISOString()}] ${message}${errorDetails}`);
+        if (error?.stack) console.error(`Stack: ${error.stack}`);
+    },
+    warn: (message, data = null) => {
+        const logMessage = data ? `${message} | Data: ${JSON.stringify(data)}` : message;
+        console.warn(`[Policy Analyzer][WARN][${new Date().toISOString()}] ${logMessage}`);
+    },
+    debug: (message, data = null) => {
+        // Chrome extensions don't have access to process.env
+        // Instead, we can control debug logging through extension's storage or manifest
+        const logMessage = data ? `${message} | Data: ${JSON.stringify(data)}` : message;
+        console.debug(`[Policy Analyzer][DEBUG][${new Date().toISOString()}] ${logMessage}`);
+    }
+};
+
 function detectPolicies() {
-    const title = document.title.toLowerCase();
+    log.debug('Starting policy detection');
+    const title = document.title;
     const url = window.location.href;
     const links = Array.from(document.querySelectorAll('a'));
-
     const policyData = [];
 
-    // Check if the current page is a policy page
-    const matchedPolicyType = Object.keys(policyTypeMap).find(keyword => title.includes(keyword));
-    if (matchedPolicyType) {
-        policyData.push({
-            title: document.title,
-            url: url,
-            policy_type: policyTypeMap[matchedPolicyType],
-        });
+    const titlePolicyType = policyMatcher(title);
+    if (titlePolicyType) {
+        policyData.push({ title, url, policy_type: titlePolicyType });
     }
+
+    // Remove this duplicate check since we already have policyMatcher above
+    // const matchedPolicyType = Object.keys(policyTypeMap).find(keyword => title.includes(keyword));
+    // if (matchedPolicyType) {
+    //     policyData.push({
+    //         title: document.title,
+    //         url: url,
+    //         policy_type: policyTypeMap[matchedPolicyType],
+    //     });
+    // }
 
     // Find policy links and filter for only matching policy types
     const policyLinks = links.filter(link => {
@@ -62,41 +106,69 @@ function detectPolicies() {
         }
     }).filter(item => item !== undefined)); //Remove undefined values.
 
+    log.debug('Policy detection completed', { 
+        policiesFound: policyData.length,
+        policies: policyData 
+    });
     return policyData;
 }
 
 
+// Enhanced error handling utility
+const handleApiError = async (response, operation) => {
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+        const errorMessage = errorData.error || errorData.message || response.statusText;
+        throw new Error(`${operation} failed: ${errorMessage}`);
+    }
+    return response.json();
+};
+
 // Function to save policy data to the backend
 async function savePolicyData(policyData) {
-    const domain = new URL(window.location.href).hostname; // Get the current domain
-    const base_url = window.location.href; // Get the base URL for this domain
-
-    // Handle the case where no policies are found
+    const domain = new URL(window.location.href).hostname;
+    const base_url = window.location.href;
     const policiesToSave = policyData.length > 0 ? policyData : [];
 
     try {
-        const response = await fetch('http://localhost:5000/save-policies', {
+        log.debug('Attempting to save policy data', {
+            domain,
+            policyCount: policiesToSave.length
+        });
+
+        const response = await fetch(`${API_BASE_URL}/save-policies`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                domain: domain,
-                base_url: base_url,
+                domain,
+                base_url,
                 policies: policiesToSave,
-                legal_entity_name: 'Example Legal Entity', // Placeholder, ideally fetch dynamically
+                legal_entity_name: 'Example Legal Entity',
             }),
         });
 
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(`Failed to save policy data: ${response.status} ${response.statusText} - ${errorData.error}`);
-        }
-
-        log.info('Policy data saved successfully.');
+        await handleApiError(response, 'Save policies');
+        log.info('Policy data saved successfully', { domain });
+        
     } catch (error) {
-        log.error('Error saving policy data:', error);
+        log.error('Failed to save policy data', {
+            domain,
+            error: error.message,
+            statusCode: error.response?.status,
+            errorDetails: error.response?.data
+        });
+        
+        // If it's a security policy violation, we should handle it gracefully
+        if (error.message.includes('security policy')) {
+            log.warn('Access denied due to security policy. This might be expected for some domains.');
+            return false;
+        }
+        
+        throw error; // Re-throw other errors to be handled by the caller
     }
+    return true;
 }
 
 // Function to check if the current page is a policy page based on keywords
@@ -134,91 +206,83 @@ function findPolicyLinks() {
 }
 
 
+// Unified promptUserForAnalysis function
 async function promptUserForAnalysis(policyData) {
     const userConfirmed = confirm('Policy Detected: Would you like to analyze the policies?');
-    if (userConfirmed) {
-        // Analyze each policy item
-        await Promise.all(policyData.map(async (item) => {
-            try{
-                await analyzePolicy(item.url, item.title);
-            } catch (error) {
-                log.error('Error during policy analysis', error);
-            }
-        }));
-    } else {
+    if (!userConfirmed) {
         log.info('User declined to analyze the policy.');
+        return;
+    }
+
+    try {
+        await Promise.all(policyData.map(async (item) => {
+            const policyContent = await fetchPolicyContent(item.url);
+            const analysisData = {
+                content: policyContent,
+                url: item.url,
+                title: item.title,
+                domain: new URL(item.url).hostname
+            };
+
+            const response = await fetch('http://127.0.0.1:5000/analyze-policy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(analysisData)
+            });
+
+            if (!response.ok) {
+                throw new Error(`Analysis failed for ${item.url}`);
+            }
+
+            log.info(`Analysis of ${item.url} successful.`);
+        }));
+    } catch (error) {
+        log.error('Error during policy analysis:', error);
+    }
+}
+
+// Add fetchPolicyContent function
+async function fetchPolicyContent(url) {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Failed to fetch ${url}`);
+        const html = await response.text();
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        const mainContent = doc.querySelector('main') || 
+                          doc.querySelector('article') || 
+                          doc.body;
+        return mainContent.innerText;
+    } catch (error) {
+        log.error(`Error fetching policy content: ${error}`);
+        throw error;
     }
 }
 
 // Function to analyze a single policy
 async function analyzePolicy(url, title) {
     try {
-        const response = await fetch(`http://localhost:5000/analyze-policy`, {
+        log.debug('Starting policy analysis', { url, title });
+        
+        const response = await fetch(`${API_BASE_URL}/analyze-policy`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, title }),
+            body: JSON.stringify({ 
+                url, 
+                title,
+                timestamp: new Date().toISOString() 
+            }),
         });
 
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(`Failed to analyze policy ${url}: ${errorData.error || response.statusText}`);
-        }
-
-        log.info(`Analysis of ${url} successful.`);
+        const data = await handleApiError(response, 'Policy analysis');
+        log.info('Policy analysis completed successfully', { url });
+        return data;
     } catch (error) {
-        log.error(`Error analyzing policy ${url}: ${error.message}`);
-        throw error; // Re-throw the error to be handled by the caller
+        log.error('Error analyzing policy', { url, error: error.message });
+        throw error;
     }
 }
 
-// Function to prompt the user for analysis upon policy detection
-async function promptUserForAnalysis() {
-    const userConfirmed = confirm('Policy Detected: Would you like to analyze the policies?');
-    if (userConfirmed) {
-        const policyContent = extractPolicyContent();
-        // Here we need to prepare the analysis request
-        const analysisData = {
-            content: policyContent,
-            domain: new URL(window.location.href).hostname,
-            url: window.location.href // Optionally send the current URL
-        };
-
-        // Send the analysis request
-        fetch('http://localhost:5000/analyze', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(analysisData),
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                log.error('Failed to analyze the policy:', data.error);
-            } else {
-                log.info('Analysis completed successfully:', data);
-            }
-        })
-        .catch(error => log.error('Error during policy analysis:', error));
-    } else {
-        log.info('User declined to analyze the policy.');
-    }
-}
-
-// Function to extract the main content of a policy page
-function extractPolicyContent() {
-    const mainContent = document.querySelector('main') || 
-                       document.querySelector('article') || 
-                       document.body; // Fallback to the entire body if specific elements aren't found
-                       
-    return mainContent.innerText; // Return the text content of the selected element
-}
-
-// Log functionality for monitoring actions in the content script
-const log = {
-    info: (message) => console.log(`INFO: ${message}`),
-    error: (message) => console.error(`ERROR: ${message}`)
-};
 
 // Function to initiate detection of policy pages
 async function detectPolicyPages() {
@@ -246,7 +310,7 @@ async function detectPolicyPages() {
 // Function to check if policy detection is needed for the domain
 async function shouldDetectPoliciesForDomain(domain) {
     try {
-        const response = await fetch(`http://localhost:5000/get-domain/${encodeURIComponent(domain)}`);
+        const response = await fetch(`http://127.0.0.1:5000/get-domain/${encodeURIComponent(domain)}`);
         if (!response.ok) {
             // If there's an error fetching, treat it as if the domain doesn't exist
             return true;
@@ -267,4 +331,20 @@ async function shouldDetectPoliciesForDomain(domain) {
 }
 
 // Execute the policy page detection when the content script runs
-window.addEventListener('load', detectPolicyPages);
+// Debounce utility
+function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+        const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+    };
+}
+
+// Debounced event listener
+window.addEventListener('load', debounce(detectPolicyPages, 300));
+
+const API_BASE_URL = 'http://127.0.0.1:5000';

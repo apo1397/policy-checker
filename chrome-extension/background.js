@@ -26,19 +26,31 @@ async function analyzePolicyContent(content, domain) {
     try {
         const response = await fetch(`${API_BASE_URL}/analyze`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            },
             body: JSON.stringify({ content, domain })
         });
 
         if (!response.ok) {
             const errorData = await response.json();
+            logger.error('Policy analysis request failed', {
+                status: response.status,
+                statusText: response.statusText,
+                error: errorData
+            });
             throw new Error(errorData.error || 'Failed to analyze policy');
         }
 
         const data = await response.json();
-        return data; // Returns { summary, keyPoints, concerns }
+        logger.info('Policy analysis completed successfully', {
+            domain,
+            hasResults: !!data
+        });
+        return data;
     } catch (error) {
-        console.error('Error in analyzePolicyContent:', error);
+        logger.error('Error in analyzePolicyContent', error);
         throw error;
     }
 }
@@ -98,3 +110,29 @@ async function checkCachedAnalysis(domain) {
     // If analysis is not found in either cache or backend, return null
     return null;
 }
+
+// Enhanced logging utility
+const logger = {
+    info: (message, data = null) => {
+        const logMessage = data ? `${message} | Data: ${JSON.stringify(data)}` : message;
+        console.log(`[Policy Analyzer Background][INFO][${new Date().toISOString()}] ${logMessage}`);
+    },
+    error: (message, error = null) => {
+        const errorDetails = error ? ` | Error: ${error.message || JSON.stringify(error)}` : '';
+        console.error(`[Policy Analyzer Background][ERROR][${new Date().toISOString()}] ${message}${errorDetails}`);
+        if (error?.stack) console.error(`Stack: ${error.stack}`);
+    },
+    debug: (message, data = null) => {
+        if (process.env.NODE_ENV === 'development') {
+            const logMessage = data ? `${message} | Data: ${JSON.stringify(data)}` : message;
+            console.debug(`[Policy Analyzer Background][DEBUG][${new Date().toISOString()}] ${logMessage}`);
+        }
+    }
+};
+
+// Update installation logging
+chrome.runtime.onInstalled.addListener(() => {
+    logger.info('Policy Analyzer Extension installed', {
+        version: chrome.runtime.getManifest().version
+    });
+});
